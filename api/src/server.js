@@ -29,6 +29,13 @@ import {
 } from "./sessionManager.js"; 
 import { callGroq, callGroqWithToolResult } from "./groqClient.js";
 import { handleToolCall } from "./toolHandler.js";
+// ─────────────────────────────────────────────
+// INSERT THESE TWO LINES HERE
+// ─────────────────────────────────────────────
+import path from "path";
+import cors from "cors";
+import { fileURLToPath } from "url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─────────────────────────────────────────────
 // System prompt placeholder
@@ -37,6 +44,9 @@ import { handleToolCall } from "./toolHandler.js";
 // ─────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are a casual RPG task manager secretary. Use tools to manage tasks and answer questions. Always reply in plain conversational English — never output JSON or structured data in your replies, very short replies (example -> task added/deleted/completed).`
 const app = express();
+//-------------
+app.use(cors());
+//============
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
@@ -209,7 +219,13 @@ app.post("/chat", async (req, res) => {
     });
   }
 });
+//--------------------
+app.use(express.static(path.join(__dirname, "api")));
 
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "api", "index.html"));
+});
+//-------------------
 // ─────────────────────────────────────────────
 // Start
 // ─────────────────────────────────────────────
