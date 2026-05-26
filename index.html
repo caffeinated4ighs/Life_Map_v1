@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Life Map — Quest Log</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #0c0c12;
+            --panel-bg: #181825;
+            --border-color: #705335; /* Gold/Bronze RPG Border */
+            --text-color: #f4ebd0;
+            --text-dim: #a59a84;
+            --accent-color: #ff9f1c;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'VT323', monospace;
+            font-size: 1.3rem;
+            letter-spacing: 1px;
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 4px double var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        h1 {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 1.5rem;
+            color: var(--accent-color);
+            text-shadow: 3px 3px 0px #000;
+        }
+
+        #connection-status {
+            font-size: 0.9rem;
+            font-family: 'Press Start 2P', cursive;
+            margin-top: 5px;
+        }
+
+        .status-ok { color: #55ff55; }
+        .status-error { color: #ff5555; }
+
+        /* Dashboard Layout */
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            flex: 1;
+            min-height: 0; /* Prevents grid items from overflowing */
+        }
+
+        /* RPG Panel Box Styling */
+        .rpg-panel {
+            background-color: var(--panel-bg);
+            border: 4px solid var(--border-color);
+            outline: 2px solid #000;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .panel-title {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.9rem;
+            color: var(--accent-color);
+            border-bottom: 2px dashed var(--border-color);
+            padding-bottom: 8px;
+            margin-bottom: 15px;
+        }
+
+        /* --- TASK LIST COMPONENT --- */
+        .task-list-wrapper {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .task-item {
+            border: 2px solid #2a2a3a;
+            padding: 10px;
+            margin-bottom: 10px;
+            background: rgba(0,0,0,0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Chronological highlight for the top/next task */
+        .task-item.next-up {
+            border: 2px solid var(--accent-color);
+            box-shadow: 0 0 8px rgba(255, 159, 28, 0.4);
+            background: rgba(255, 159, 28, 0.05);
+        }
+
+        .next-tag {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.6rem;
+            background: var(--accent-color);
+            color: #000;
+            padding: 2px 5px;
+            margin-right: 8px;
+        }
+
+        .task-meta {
+            font-size: 1rem;
+            color: var(--text-dim);
+        }
+
+        /* Dynamic Priority Coloring based on Hue */
+        /* Lower numbers (e.g., 1) = cooler/calm greens, Higher numbers (e.g., 5) = hotter reds */
+        .prio-badge {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.7rem;
+            padding: 4px 8px;
+            border: 1px solid currentColor;
+            border-radius: 3px;
+        }
+
+        /* --- CHAT COMPONENT --- */
+        .chat-log {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            padding-right: 5px;
+        }
+
+        .chat-msg {
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+
+        .msg-user { color: #55ffff; }
+        .msg-ai { color: var(--text-color); }
+        .msg-system { color: var(--text-dim); font-style: italic; }
+
+        .chat-input-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background-color: #000;
+            border: 2px solid var(--border-color);
+            color: var(--text-color);
+            font-family: 'VT323', monospace;
+            font-size: 1.4rem;
+            padding: 8px;
+            outline: none;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--accent-color);
+        }
+
+        button {
+            background-color: var(--border-color);
+            color: #fff;
+            border: 2px solid #000;
+            font-family: 'VT323', monospace;
+            font-size: 1.4rem;
+            padding: 8px 16px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: var(--accent-color);
+            color: #000;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-container { grid-template-columns: 1fr; }
+            body { height: auto; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>LIFE MAP</h1>
+        <div id="connection-status">LINKING TO REALM...</div>
+    </header>
+
+    <div class="dashboard-container">
+        
+        <div class="rpg-panel">
+            <div class="panel-title">> TODAY'S QUESTS</div>
+            <div class="task-list-wrapper" id="task-list">
+                <div class="task-msg msg-system">Fetching local scrolls...</div>
+            </div>
+        </div>
+
+        <div class="rpg-panel">
+            <div class="panel-title">> TALK TO SECRETARY</div>
+            <div class="chat-log" id="chat-log">
+                <div class="chat-msg msg-system">System initialization complete. Speak your intent.</div>
+            </div>
+            <div class="chat-input-row">
+                <input type="text" id="chat-input" placeholder="Type an action (e.g., 'add task: drink water at 2pm prio 2')..." autocomplete="off">
+                <button id="send-btn">EXECUTE</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const API_BASE = "https://lifemapv1-production.up.railway.app";
+        
+        // UI Elements
+        const statusEl = document.getElementById('connection-status');
+        const chatLog = document.getElementById('chat-log');
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        const taskListEl = document.getElementById('task-list');
+
+        // Setup session tracking as stipulated by the developer brief
+        let sessionId = localStorage.getItem('lifemap_session_id') || null;
+
+        // 1. Liveness Check System
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    statusEl.innerText = "● REALM CONNECTED";
+                    statusEl.className = "status-ok";
+                } else {
+                    throw new Error("Degraded state");
+                }
+            } catch (err) {
+                statusEl.innerText = "● LINK BROKEN (503)";
+                statusEl.className = "status-error";
+            }
+        }
+
+        // 2. Load Task UI Dashboard
+        // NOTE: This assumes you expose a structured endpoint (e.g. GET /tasks) on your backend.
+        async function updateDashboard() {
+            try {
+                const res = await fetch(`${API_BASE}/tasks`); 
+                if (!res.ok) throw new Error();
+                const tasks = await res.json(); // Expected structure: [{id, title, time, priority}]
+                
+                if (!tasks || tasks.length === 0) {
+                    taskListEl.innerHTML = `<div class="chat-msg msg-system">All fields cleared. No active quests today.</div>`;
+                    return;
+                }
+
+                // Sort Chronologically by time string safely
+                tasks.sort((a, b) => a.time.localeCompare(b.time));
+
+                taskListEl.innerHTML = '';
+                tasks.forEach((task, index) => {
+                    const isNext = index === 0; // Top chronological item highlighted
+                    
+                    // Priority calculated by Hue shifting: 120 (Green) down to 0 (Red)
+                    // Formula maps priority 1-5 down a clean spectrum scale
+                    const maxPrio = 5;
+                    const calculatedHue = Math.max(0, 120 - ((task.priority - 1) * (120 / (maxPrio - 1))));
+                    
+                    const taskItem = document.createElement('div');
+                    taskItem.className = `task-item ${isNext ? 'next-up' : ''}`;
+                    taskItem.innerHTML = `
+                        <div>
+                            ${isNext ? '<span class="next-tag">NEXT</span>' : ''}
+                            <span style="font-size:1.4rem;">${task.title}</span>
+                            <div class="task-meta">Scheduled: ${task.time}</div>
+                        </div>
+                        <span class="prio-badge" style="color: hsl(${calculatedHue}, 100%, 60%);">
+                            P${task.priority}
+                        </span>
+                    `;
+                    taskListEl.appendChild(taskItem);
+                });
+
+            } catch (err) {
+                taskListEl.innerHTML = `
+                    <div class="chat-msg msg-system" style="color: #ff5555;">
+                        CRITICAL: Could not fetch structured task array.<br>
+                        Ensure GET /tasks is implemented on the API or CORS middleware is active.
+                    </div>`;
+            }
+        }
+
+        // 3. Conversation Stream
+        async function handleSendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            // Render message locally in UI
+            appendChatMessage("YOU", text, "msg-user");
+            chatInput.value = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: text,
+                        session_id: sessionId || undefined
+                    })
+                });
+
+                if (response.status === 400) {
+                    appendChatMessage("SYS", "Please construct a valid intent.", "msg-system");
+                    return;
+                } else if (response.status === 500) {
+                    appendChatMessage("SYS", "The internal engine failed.", "msg-system");
+                    return;
+                }
+
+                const data = await response.json();
+                
+                // Track and lock session context window
+                if (data.session_id) {
+                    sessionId = data.session_id;
+                    localStorage.setItem('lifemap_session_id', sessionId);
+                }
+
+                appendChatMessage("SECRETARY", data.reply, "msg-ai");
+                
+                // Refresh dashboard arrays asynchronously every time a chat event finishes mutating state
+                updateDashboard();
+
+            } catch (err) {
+                appendChatMessage("SYS", "Failed to reach backend interface.", "msg-system");
+            }
+        }
+
+        function appendChatMessage(sender, message, styleClass) {
+            const msgNode = document.createElement('div');
+            msgNode.className = `chat-msg ${styleClass}`;
+            msgNode.innerHTML = `<strong>[${sender}]:</strong> ${message}`;
+            chatLog.appendChild(msgNode);
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        // Event Triggers
+        sendBtn.addEventListener('click', handleSendMessage);
+        chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleSendMessage(); });
+
+        // Initial Initialization Sequence
+        checkHealth();
+        updateDashboard();
+    </script>
+</body>
+</html>
