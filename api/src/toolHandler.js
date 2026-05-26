@@ -7,6 +7,7 @@
  * Referenced by: server.js (POST /chat loop)
  * Updated:  TASK-20260526-011 + TASK-20260526-012 — stubs replaced with real agents
  *           TASK-20260526-023 — callDbAgent stub removed, real import wired
+ *           TASK-20260526-028 — remove_task guard added (same pattern as complete_task)
  *
  * Pipeline per AGENTS.md:
  *   LLM returns tool_use → validate name → enforce arg guards →
@@ -16,6 +17,7 @@
  * Design decisions enforced here (per Integration Agent / SUPERVISOR_LOG):
  *   - add_task:      xp and gold must be null (LLM must not freestyle reward values)
  *   - complete_task: task_id OR task_title required — reject if neither present
+ *   - remove_task:   task_id OR task_title required — reject if neither present
  *   - All tool names validated against VALID_TOOL_NAMES whitelist
  */
 
@@ -61,6 +63,22 @@ function validateCompleteTask(args) {
   return { valid: true, error: null };
 }
 
+/**
+ * Enforce remove_task constraints.
+ * At least one of task_id or task_title must be present.
+ * Returns { valid: bool, error: string|null }.
+ */
+function validateRemoveTask(args) {
+  if (!args.task_id && !args.task_title) {
+    return {
+      valid: false,
+      error:
+        "remove_task requires either task_id or task_title. Neither was provided by the LLM.",
+    };
+  }
+  return { valid: true, error: null };
+}
+
 // ─────────────────────────────────────────────
 // Main dispatch
 // ─────────────────────────────────────────────
@@ -97,6 +115,18 @@ export async function handleToolCall(toolName, toolArgs) {
         result: { error: check.error },
         clarification:
           "Could you clarify which task you're completing? A task ID or name works.",
+      };
+    }
+  }
+
+  if (toolName === "remove_task") {
+    const check = validateRemoveTask(args);
+    if (!check.valid) {
+      return {
+        success: false,
+        result: { error: check.error },
+        clarification:
+          "Could you clarify which task you want to remove? A task ID or name works.",
       };
     }
   }

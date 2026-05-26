@@ -20,14 +20,16 @@
  *     - query_today: include_carried_over → anyOf:[boolean,string] (LLM passes "true" as string)
  *     - query_player_state: include_skills/effects/stats → anyOf:[boolean,string]
  *     - log_event: date, label, notes → anyOf:[string,null]; value → anyOf:[number,null]
+ *   TASK-20260526-026 — add remove_task (tool 7); update VALID_TOOL_NAMES comment
  *
  * Tool categories:
- *   add_task          — create a new task row
- *   complete_task     — mark a task done, trigger XP/gold/stat/skill resolution
- *   reschedule_task   — move a deferred or upcoming task to a new date/time
- *   query_today       — fetch today's task list + player snapshot
+ *   add_task           — create a new task row
+ *   complete_task      — mark a task done, trigger XP/gold/stat/skill resolution
+ *   reschedule_task    — move a deferred or upcoming task to a new date/time
+ *   query_today        — fetch today's task list + player snapshot
  *   query_player_state — fetch full player state (XP, gold, level, stats, streak)
- *   log_event         — record a freeform daily event (steps, substance, leisure, etc.)
+ *   log_event          — record a freeform daily event (steps, substance, leisure, etc.)
+ *   remove_task        — cancel/delete a task without awarding XP or gold
  *
  * IMPORTANT: These are the tool *definitions* fed to the LLM.
  * The LLM returns a tool_use block → Chat API Agent extracts args →
@@ -357,6 +359,36 @@ export const GROQ_TOOLS = [
       },
     },
   },
+
+  // ──────────────────────────────────────────────────────────
+  // 7. remove_task
+  // Cancels a task the user no longer wants to do.
+  // Sets status to 'Cancelled' — does NOT award XP or gold.
+  // ──────────────────────────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "remove_task",
+      description:
+        "Remove a task the user no longer wants to do. " +
+        "Call when the user says cancel, remove, delete, or drop a task. " +
+        "This does NOT award XP or gold — use complete_task if the task was actually done.",
+      parameters: {
+        type: "object",
+        properties: {
+          task_id: {
+            anyOf: [{ type: "integer" }, { type: "null" }],
+            description: "Primary key of the task to cancel.",
+          },
+          task_title: {
+            anyOf: [{ type: "string" }, { type: "null" }],
+            description: "Title fallback if task_id unavailable. Logic Agent will fuzzy match.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 /**
@@ -366,4 +398,4 @@ export const GROQ_TOOLS = [
 export const VALID_TOOL_NAMES = Object.freeze(
   GROQ_TOOLS.map((t) => t.function.name)
 );
-// => ["add_task", "complete_task", "reschedule_task", "query_today", "query_player_state", "log_event"]
+// => ["add_task", "complete_task", "reschedule_task", "query_today", "query_player_state", "log_event", "remove_task"]

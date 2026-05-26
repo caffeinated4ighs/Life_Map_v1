@@ -98,14 +98,17 @@ export async function insertMessage(conversationId, summaryJson) {
  * User patterns (keyed on intent):
  *   add_task:      "User asked to add task: [raw_preview]"
  *   complete_task: "User completed a task: [raw_preview]"
+ *   remove_task:   "User asked to remove a task: [raw_preview]"
  *   chitchat:      "User said: [raw_preview]"
  *   unknown / *:   "User said: [raw_preview]"
  *
  * Assistant patterns (keyed on intent + outcome):
- *   tool + success:        "Assistant [tool] '[task_title]' — XP+[xp] Gold+[gold]"
- *   chitchat:              "Assistant replied conversationally."
- *   * + clarification:     "Assistant couldn't complete [tool] — clarification requested."
- *   query tools:           "Assistant returned [tool] results."
+ *   tool + success:              "Assistant [tool] '[task_title]' — XP+[xp] Gold+[gold]"
+ *   remove_task + success:       "Assistant cancelled task '[task_title]'."
+ *   remove_task + error:         "Assistant couldn't find that task — clarification requested."
+ *   chitchat:                    "Assistant replied conversationally."
+ *   * + clarification/error:     "Assistant couldn't complete [tool] — clarification requested."
+ *   query tools:                 "Assistant returned [tool] results."
  *
  * @param {object} s - Parsed summary_json object
  * @returns {string}
@@ -122,6 +125,8 @@ function renderSummaryAsText(s) {
         return `User asked to add task: ${preview}`;
       case "complete_task":
         return `User completed a task: ${preview}`;
+      case "remove_task":
+        return `User asked to remove a task: ${preview}`;
       case "chitchat":
         return `User said: ${preview}`;
       default:
@@ -132,6 +137,15 @@ function renderSummaryAsText(s) {
   // assistant role
   if (intent === "chitchat") {
     return "Assistant replied conversationally.";
+  }
+
+  // remove_task — separate success and error paths
+  if (intent === "remove_task") {
+    if (outcome === "success" || outcome === "ok") {
+      const title = entities.task_title ? `'${entities.task_title}'` : "task";
+      return `Assistant cancelled task ${title}.`;
+    }
+    return "Assistant couldn't find that task — clarification requested.";
   }
 
   if (outcome === "clarification needed" || outcome === "tool_error") {

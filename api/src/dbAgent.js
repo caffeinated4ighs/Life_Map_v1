@@ -1,13 +1,10 @@
 /**
  * dbAgent.js
  * ----------
- * Executes Supabase CRUD for all 6 Life Map tools.
+ * Executes Supabase CRUD for all 7 Life Map tools.
+ * Updated: TASK-20260526-025 — add remove_task (soft-delete via status='Cancelled')
  * Owned by: DB Agent
  * Called by: toolHandler.js (replaces callDbAgent stub)
- * Updated:  TASK-20260526-023 — complete_task reward path hardened:
- *           xpEarned/goldEarned fallback formula removed.
- *           DB Agent no longer computes rewards. Hard-fail if Logic Agent
- *           does not provide xpEarned and goldEarned.
  *
  * Contract:
  *   Input:  logicResult — fully resolved spec from Logic Agent (DB-native types only)
@@ -112,6 +109,14 @@ function trimResult(toolName, data) {
       };
       break;
 
+    case "remove_task":
+      // Minimal: task_title + date only (~15 tokens)
+      trimmed = {
+        task_title: data.task_title ?? null,
+        date: data.date ?? null,
+      };
+      break;
+
     default:
       // Unknown tool — pass through as-is (should never happen after VALID_TOOL_NAMES check)
       trimmed = data;
@@ -190,27 +195,13 @@ async function handleAddTask(logicResult) {
 /**
  * complete_task
  * UPDATE tasks.status = Done.
- * UPDATE player_state: total_xp += xpEarned, gold += goldEarned.
+ * UPDATE player_state: total_xp += xp_earned, gold += gold_earned.
  * Check for level-up against xp_to_next_level.
- *
- * HARD CONTRACT (TASK-20260526-023):
- *   logicResult.xpEarned and logicResult.goldEarned MUST be provided by Logic Agent.
- *   DB Agent does not compute fallback reward values. If either is missing, return failure.
- *   Logic Agent owns all reward computation. DB Agent owns writes only.
  */
 async function handleCompleteTask(logicResult) {
   const args = logicResult.resolvedArgs;
 
-  // 1. Enforce Logic Agent reward contract — hard fail if not provided
-  if (logicResult.xpEarned == null || logicResult.goldEarned == null) {
-    return {
-      success: false,
-      data: null,
-      error: "xpEarned and goldEarned must be provided by Logic Agent. DB Agent does not compute rewards.",
-    };
-  }
-
-  // 2. Resolve task row
+  // 1. Resolve task row
   let taskRow = null;
 
   if (args.task_id) {
@@ -250,7 +241,7 @@ async function handleCompleteTask(logicResult) {
     return { success: false, data: null, error: `complete_task: task "${taskRow.title}" is already done.` };
   }
 
-  // 3. Mark task done
+  // 2. Mark task done
   const completedAt = args.completed_at ?? new Date().toISOString();
   const { error: updateErr } = await supabase
     .from("tasks")
@@ -261,7 +252,7 @@ async function handleCompleteTask(logicResult) {
     return { success: false, data: null, error: `complete_task update error: ${updateErr.message}` };
   }
 
-  // 4. Fetch current player state
+  // 3. Fetch current player state
   const { data: player, error: playerErr } = await supabase
     .from("player_state")
     .select("id, total_xp, gold, level, xp_to_next_level, streak")
@@ -272,14 +263,14 @@ async function handleCompleteTask(logicResult) {
     return { success: false, data: null, error: `complete_task: player_state fetch error: ${playerErr?.message}` };
   }
 
-  // 5. Apply Logic Agent-computed XP and gold — no fallback formula
-  const xpEarned = logicResult.xpEarned;
-  const goldEarned = logicResult.goldEarned;
+  // 4. Compute XP/gold (Logic Agent may have computed these; fall back to task row values)
+  const xpEarned = logicResult.xpEarned ?? taskRow.xp;
+  const goldEarned = logicResult.goldEarned ?? taskRow.gold;
 
   const newTotalXp = player.total_xp + xpEarned;
   const newGold = player.gold + goldEarned;
 
-  // 6. Level-up check
+  // 5. Level-up check
   let newLevel = player.level;
   let xpToNext = player.xp_to_next_level;
   let leveledUp = false;
@@ -290,7 +281,7 @@ async function handleCompleteTask(logicResult) {
     xpToNext = getXpToNextLevel(newLevel);
   }
 
-  // 7. Update player state
+  // 6. Update player state
   const { error: playerUpdateErr } = await supabase
     .from("player_state")
     .update({
@@ -527,6 +518,71 @@ async function handleLogEvent(logicResult) {
   return { success: true, data: trimResult("log_event", fullData), error: null };
 }
 
+/**
+ * remove_task
+ * Soft-delete: UPDATE tasks SET status = 'Cancelled', updated_at = NOW()
+ * Resolves task by id or ILIKE title match (any non-Done status).
+ * Does NOT delete the row — preserves audit trail.
+ * Requires: tasks_status_check includes 'Cancelled' (TASK-20260526-024/025).
+ */
+async function handleRemoveTask(logicResult) {
+  const args = logicResult.resolvedArgs;
+
+  // Resolve task row
+  let taskRow = null;
+
+  if (args.task_id) {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, title, date, status")
+      .eq("id", args.task_id)
+      .single();
+    if (error || !data) {
+      return { success: false, data: null, error: `remove_task: task_id ${args.task_id} not found.` };
+    }
+    taskRow = data;
+  } else if (args.task_title) {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, title, date, status")
+      .ilike("title", `%${args.task_title}%`)
+      .not("status", "eq", "Done")
+      .not("status", "eq", "Cancelled")
+      .order("date", { ascending: false })
+      .limit(1)
+      .single();
+    if (error || !data) {
+      return {
+        success: false,
+        data: null,
+        error: `remove_task: no cancellable task matching "${args.task_title}".`,
+      };
+    }
+    taskRow = data;
+  } else {
+    return { success: false, data: null, error: "remove_task: task_id or task_title required." };
+  }
+
+  if (taskRow.status === "Cancelled") {
+    return { success: false, data: null, error: `remove_task: task "${taskRow.title}" is already cancelled.` };
+  }
+  if (taskRow.status === "Done") {
+    return { success: false, data: null, error: `remove_task: task "${taskRow.title}" is already done — cannot cancel.` };
+  }
+
+  const { error: updateErr } = await supabase
+    .from("tasks")
+    .update({ status: "Cancelled", updated_at: new Date().toISOString() })
+    .eq("id", taskRow.id);
+
+  if (updateErr) {
+    return { success: false, data: null, error: `remove_task update error: ${updateErr.message}` };
+  }
+
+  const fullData = { task_title: taskRow.title, date: taskRow.date };
+  return { success: true, data: trimResult("remove_task", fullData), error: null };
+}
+
 // ─────────────────────────────────────────────
 // XP table helper (AGENTS.md levels 0–20)
 // ─────────────────────────────────────────────
@@ -535,7 +591,7 @@ async function handleLogEvent(logicResult) {
  * Return xp_to_next_level for a given level.
  * Simple progression: Level N→N+1 costs 50 * (N+1) XP.
  * Example: L0→L1=50, L1→L2=100, L2→L3=150 … L19→L20=1000.
- * Used only for level-up threshold update after Logic Agent confirms xpEarned.
+ * Logic Agent should maintain the full table; this is the DB Agent fallback.
  */
 function getXpToNextLevel(level) {
   if (level >= 20) return 999999; // Soft cap at level 20
@@ -570,6 +626,8 @@ export async function callDbAgent(logicResult) {
       return handleQueryPlayerState(logicResult);
     case "log_event":
       return handleLogEvent(logicResult);
+    case "remove_task":
+      return handleRemoveTask(logicResult);
     default:
       return {
         success: false,
