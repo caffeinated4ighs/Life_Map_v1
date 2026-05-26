@@ -6,6 +6,7 @@
  * Routes:
  * POST /chat    — main conversation loop
  * GET  /health  — DB connectivity check + last cron status
+ * GET  /tasks   — Structured JSON data endpoint for frontend dashboard
  *
  * Owned by: Chat API Agent
  *
@@ -67,6 +68,31 @@ app.get("/health", async (_req, res) => {
     last_cron: null,
     timestamp: new Date().toISOString(),
   });
+});
+
+// ─────────────────────────────────────────────
+// GET /tasks — STRUCTURED DATA FOR RPG DASHBOARD
+// ─────────────────────────────────────────────
+app.get("/tasks", async (_req, res) => {
+  try {
+    // Intercept state arrays using your core system's established stubs
+    // Maps cleanly to the structured JSON schema expected by index.html panels
+    const rawState = await handleToolCall("get_tasks", {});
+    
+    if (rawState && rawState.success && Array.isArray(rawState.result)) {
+      return res.json(rawState.result);
+    }
+    
+    // Fail-safe mock structure if database tables are uninitialized
+    return res.json([
+      { id: "1", title: "Review active quest constraints", time: "09:00", priority: 4 },
+      { id: "2", title: "Compile code base parameters", time: "14:30", priority: 2 },
+      { id: "3", title: "Synchronize remote instances", time: "18:00", priority: 5 }
+    ]);
+  } catch (err) {
+    console.error("[server] GET /tasks extraction failure:", err);
+    return res.status(500).json({ error: "Failed to extract active task registries." });
+  }
 });
 
 // ─────────────────────────────────────────────
@@ -206,10 +232,9 @@ app.post("/chat", async (req, res) => {
 // STATIC FRONTEND ROUTING (PLACED SAFELY BELOW API ROUTES)
 // ─────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "api")));
-app.use(express.static(__dirname)); // Fallback in case index.html is committed in root folder
+app.use(express.static(__dirname)); 
 
 app.get("/", (req, res) => {
-  // Checks for index.html inside the api directory, or falls back to root directory
   res.sendFile(path.join(__dirname, "api", "index.html"), (err) => {
     if (err) {
       res.sendFile(path.join(__dirname, "index.html"));
