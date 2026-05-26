@@ -1,0 +1,62 @@
+# good_morning.yml
+# ─────────────────────────────────────────────────────────────
+# Trigger:   Daily at 12:00 UTC (= 7am EST / 8am EDT)
+#            Safe default — 1hr drift in summer (EDT) is acceptable
+# Purpose:   Open the day. Trigger carry-over logic, effect expiry,
+#            skill decay checks, arc pressure escalation.
+# Reads:     tasks (overdue), effects (expiry), skills (decay), arcs (end dates)
+# Writes:    day_snapshots (open record), deferred task rows (carry-overs),
+#            messages (morning briefing as role:system)
+# Logs:      Carry-over count, effects expired, skills in decay, HTTP status
+# ─────────────────────────────────────────────────────────────
+# Idempotency: the /cron/morning endpoint handles "don't carry over twice".
+#              This workflow is a dumb HTTP trigger — safe to re-run manually.
+# ─────────────────────────────────────────────────────────────
+
+name: Good Morning
+
+on:
+  schedule:
+    - cron: '0 12 * * *'    # 12:00 UTC daily = 7am EST / 8am EDT
+  workflow_dispatch:          # Allow manual trigger for testing
+
+jobs:
+  good-morning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Call Good Morning endpoint
+        env:
+          RAILWAY_URL: ${{ secrets.RAILWAY_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "Triggering Good Morning job at $(date -u)"
+          # TODO: replace /cron/morning with confirmed path once Chat API Agent delivers endpoint
+          RESPONSE=$(curl --fail --silent --show-error \
+            --max-time 30 \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "x-cron-secret: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --write-out "\nHTTP_STATUS:%{http_code}" \
+            "${RAILWAY_URL}/cron/morning")
+
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS:")
+
+          echo "HTTP Status: ${HTTP_STATUS}"
+          echo "Response: ${BODY}"
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Good Morning job failed with status ${HTTP_STATUS}"
+            exit 1
+          fi
+
+          echo "✅ Good Morning job completed"
+
+      - name: Log summary
+        if: success()
+        run: |
+          echo "Good Morning cron completed at $(date -u)"
+          echo "Day opened. Carry-overs, effect expiry, and decay checks handled by API."

@@ -1,0 +1,63 @@
+# eod.yml
+# ─────────────────────────────────────────────────────────────
+# Trigger:   Daily at 04:00 UTC (= 11pm EST / 12am EDT)
+#            Fires ~16 hours after good_morning.yml (12:00 UTC).
+#            Natural 16hr gap is sufficient ordering guard —
+#            no `needs` dependency required across separate workflow files.
+# Purpose:   Close the day. Evaluate streak, write day snapshot close
+#            record, apply arc XP multipliers to completed arc tasks.
+# Reads:     tasks (today's), player_state, streak_log, arcs, arc_tasks
+# Writes:    day_snapshots (close record), streak_log, player_state (streak),
+#            arc_tasks (XP multipliers applied)
+# Logs:      Tasks completed, mandatory_met boolean, XP earned, streak result
+# ─────────────────────────────────────────────────────────────
+# No LLM calls — all logic is deterministic via Logic Agent rules.
+# ─────────────────────────────────────────────────────────────
+
+name: End of Day
+
+on:
+  schedule:
+    - cron: '0 4 * * *'     # 04:00 UTC daily = 11pm EST / midnight EDT
+  workflow_dispatch:          # Allow manual trigger for testing
+
+jobs:
+  end-of-day:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Call EOD endpoint
+        env:
+          RAILWAY_URL: ${{ secrets.RAILWAY_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "Triggering End of Day job at $(date -u)"
+          # TODO: replace /cron/eod with confirmed path once Chat API Agent delivers endpoint
+          RESPONSE=$(curl --fail --silent --show-error \
+            --max-time 30 \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --header "x-cron-secret: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --write-out "\nHTTP_STATUS:%{http_code}" \
+            "${RAILWAY_URL}/cron/eod")
+
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS:")
+
+          echo "HTTP Status: ${HTTP_STATUS}"
+          echo "Response: ${BODY}"
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ EOD job failed with status ${HTTP_STATUS}"
+            exit 1
+          fi
+
+          echo "✅ EOD job completed"
+
+      - name: Log summary
+        if: success()
+        run: |
+          echo "EOD cron completed at $(date -u)"
+          echo "Day closed. Streak evaluated, snapshot written, arc multipliers applied by API."
