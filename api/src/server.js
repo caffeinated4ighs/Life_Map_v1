@@ -229,15 +229,23 @@ app.post("/chat", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// STATIC FRONTEND ROUTING (PLACED SAFELY BELOW API ROUTES)
+// STATIC FRONTEND ROUTING (ADJUSTED FOR API/ ROOT CONTEXT)
 // ─────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, "api")));
+// When api/ is the root, index.html is in the immediate current directory (.)
+app.use(express.static(path.join(__dirname, ".."))); // Covers src/../ index matching
 app.use(express.static(__dirname)); 
+app.use(express.static(process.cwd())); // Fallback to current working directory
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "api", "index.html"), (err) => {
+  // Checks relative to working directory execution root
+  res.sendFile(path.join(process.cwd(), "index.html"), (err) => {
     if (err) {
-      res.sendFile(path.join(__dirname, "index.html"));
+      // Fallback relative to the src/ directory path
+      res.sendFile(path.join(__dirname, "..", "index.html"), (err2) => {
+        if (err2) {
+          res.sendFile(path.join(__dirname, "index.html"));
+        }
+      });
     }
   });
 });
