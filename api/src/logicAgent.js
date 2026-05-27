@@ -6,11 +6,7 @@
  * Owned by: Logic Agent
  * Called by: toolHandler.js (after arg guards, before DB Agent)
  * Updated:  TASK-20260526-027 — remove_task handler added
- *
- * Contract (per AGENTS.md + SUPERVISOR_LOG FLAG-008):
- *   - Receives raw LLM args (human-readable strings: "P0", "low", "mandatory")
- *   - Returns a fully resolved logicResult — DB-native types only
- *   - DB Agent receives only DB-native types; it never normalises
+ *           TASK-20260527-001 — time_block normalisation added (FLAG-009)
  *
  * FLAG-008 normalisation (all tools that carry these fields):
  *   tasks.type:        mandatory→Mandatory | bonus→Bonus | habit→Habit | project→Project
@@ -18,21 +14,10 @@
  *   tasks.priority:    P0→0 | P1→1 | P2→2 | P3→3
  *   tasks.energy_cost: low→2 | medium→3 | high→5
  *
- * logicResult shape:
- *   {
- *     tool:              string,           // tool name, passed through to DB Agent
- *     resolvedArgs:      object,           // DB-native args — DB Agent reads these
- *     needsClarification: boolean,         // true → surface casualPrompt to user, skip DB Agent
- *     casualPrompt?:     string,           // shown to user when needsClarification is true
- *     // Reward fields — present only for tools that compute them:
- *     xp?:              integer,
- *     gold?:            integer,
- *     statDeltas?:      Array<{ stat_id, delta }>,
- *     skillDeltas?:     Array<{ skill_id, xp_gain }>,
- *   }
- *
- * remove_task is the simplest path — no FLAG-008 fields, no reward computation.
- * The DB Agent sets tasks.status = 'Cancelled' and performs no XP/gold update.
+ * FLAG-009 normalisation (added this patch):
+ *   tasks.time_block:  morning→Morning | afternoon→Afternoon | evening→Evening |
+ *                      night→Evening | anytime→Flexible | null→Flexible
+ *                      DB CHECK expects Title Case: Morning|Afternoon|Evening|Flexible
  */
 
 // ─────────────────────────────────────────────
@@ -60,13 +45,27 @@ const ENERGY_COST_MAP = {
   low: 2, medium: 3, high: 5,
 };
 
-function normaliseType(val)       { return val != null ? (TYPE_MAP[val] ?? val)       : null; }
-function normaliseLateRule(val)   { return val != null ? (LATE_RULE_MAP[val] ?? val)  : null; }
-function normalisePriority(val)   { return val != null ? (PRIORITY_MAP[val] ?? val)   : null; }
-function normaliseEnergyCost(val) { return val != null ? (ENERGY_COST_MAP[val] ?? val): null; }
+// FLAG-009: time_block normalisation
+// Tool spec sends lowercase ("morning", "anytime"), DB CHECK expects Title Case.
+// "night" is not a valid DB value — map to "Evening" as closest equivalent.
+// null/undefined → "Flexible" (safe default).
+const TIME_BLOCK_MAP = {
+  morning:   "Morning",
+  afternoon: "Afternoon",
+  evening:   "Evening",
+  night:     "Evening",
+  anytime:   "Flexible",
+  flexible:  "Flexible",
+};
+
+function normaliseType(val)       { return val != null ? (TYPE_MAP[val] ?? val)            : null; }
+function normaliseLateRule(val)   { return val != null ? (LATE_RULE_MAP[val] ?? val)       : null; }
+function normalisePriority(val)   { return val != null ? (PRIORITY_MAP[val] ?? val)        : null; }
+function normaliseEnergyCost(val) { return val != null ? (ENERGY_COST_MAP[val] ?? val)     : null; }
+function normaliseTimeBlock(val)  { return TIME_BLOCK_MAP[val] ?? "Flexible"; }
 
 // ─────────────────────────────────────────────
-// XP base values (per AGENTS.md / SUPERVISOR_LOG 2026-05-26 00:01)
+// XP base values (per AGENTS.md)
 // ─────────────────────────────────────────────
 
 const XP_BASE = {
@@ -76,7 +75,7 @@ const XP_BASE = {
   Bonus:      6,
 };
 
-// Gold base by priority (DB-native integer key, per AGENTS.md)
+// Gold base by priority (DB-native integer key)
 const GOLD_BASE = { 0: 15, 1: 10, 2: 6, 3: 3 };
 
 // ─────────────────────────────────────────────
@@ -84,8 +83,6 @@ const GOLD_BASE = { 0: 15, 1: 10, 2: 6, 3: 3 };
 // ─────────────────────────────────────────────
 
 // ── remove_task ──────────────────────────────
-// Simplest Logic Agent path. No FLAG-008 fields. No reward computation.
-// Validates that at least one identifier is present, then passes through.
 function handleRemoveTask(args) {
   const { task_id, task_title } = args;
 
@@ -98,7 +95,6 @@ function handleRemoveTask(args) {
     };
   }
 
-  // Build resolvedArgs with whichever identifier(s) are present
   const resolvedArgs = {};
   if (task_id    != null) resolvedArgs.task_id    = task_id;
   if (task_title != null) resolvedArgs.task_title = task_title;
@@ -107,7 +103,6 @@ function handleRemoveTask(args) {
     tool: "remove_task",
     resolvedArgs,
     needsClarification: false,
-    // No xp, gold, statDeltas, skillDeltas — remove_task awards nothing
   };
 }
 
@@ -119,13 +114,14 @@ function handleAddTask(args) {
     late_rule:   normaliseLateRule(args.late_rule),
     priority:    normalisePriority(args.priority),
     energy_cost: normaliseEnergyCost(args.energy_cost),
+    time_block:  normaliseTimeBlock(args.time_block),  // FLAG-009 fix
   };
 
   const taskType = resolvedArgs.type ?? "Bonus";
-  const priority = resolvedArgs.priority ?? 2; // default P2
+  const priority = resolvedArgs.priority ?? 2;
 
   const xp   = XP_BASE[taskType] ?? XP_BASE.Bonus;
-  const gold  = computeGold(priority, args.energy_cost ?? "medium");
+  const gold = computeGold(priority, args.energy_cost ?? "medium");
 
   return {
     tool: "add_task",
@@ -140,13 +136,10 @@ function handleAddTask(args) {
 
 // ── complete_task ─────────────────────────────
 function handleCompleteTask(args) {
-  // task_id / task_title presence already validated in toolHandler before this call
   return {
     tool: "complete_task",
     resolvedArgs: { ...args },
     needsClarification: false,
-    // XP/gold/stat/skill deltas require task lookup — DB Agent reads task row first,
-    // then applies rewards. Full reward pipeline TODO in Logic Agent Wave 2.
     statDeltas:  [],
     skillDeltas: [],
   };
@@ -195,7 +188,6 @@ function handleLogEvent(args) {
 // Base: P0=15g / P1=10g / P2=6g / P3=3g
 // Effort offset: low=-2 / medium=0 / high=+5
 // Floor: 1g minimum
-// (per SUPERVISOR_LOG 2026-05-25 00:19)
 // ─────────────────────────────────────────────
 
 function computeGold(priorityInt, energyCostRaw) {
@@ -208,14 +200,6 @@ function computeGold(priorityInt, energyCostRaw) {
 // Main export
 // ─────────────────────────────────────────────
 
-/**
- * Dispatch to the appropriate per-tool handler.
- * Called by toolHandler.js after arg guards.
- *
- * @param {string} toolName   - Validated tool name (already checked against VALID_TOOL_NAMES)
- * @param {object} args       - Raw LLM args (post-sanitization in toolHandler)
- * @returns {object}          - logicResult — see contract in file header
- */
 export async function callLogicAgent(toolName, args) {
   console.log(`[logicAgent] Dispatching: ${toolName}`, args);
 
@@ -229,7 +213,6 @@ export async function callLogicAgent(toolName, args) {
     case "log_event":          return handleLogEvent(args);
 
     default:
-      // Should never reach here — toolHandler validates against VALID_TOOL_NAMES first
       throw new Error(`[logicAgent] Unknown tool: "${toolName}"`);
   }
 }
