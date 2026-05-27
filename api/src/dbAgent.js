@@ -1,31 +1,11 @@
 /**
  * dbAgent.js
  * ----------
- * Executes Supabase CRUD for all 7 Life Map tools.
- * Updated: TASK-20260526-025 — add remove_task (soft-delete via status='Cancelled')
- *          TASK-20260527-002 — fix complete_task title match (drop date filter, FLAG-DATE)
- *                            — fix query_today to use status filter, not date filter (FLAG-DATE)
- * Owned by: DB Agent
- * Called by: toolHandler.js (replaces callDbAgent stub)
- *
- * Contract:
- *   Input:  logicResult — fully resolved spec from Logic Agent (DB-native types only)
- *   Output: { success: bool, data: object (trimmed), error: string | null }
- *
- * FLAG-008 normalisation is handled UPSTREAM by Logic Agent before reaching here.
- * DB Agent receives only DB-native types:
- *   tasks.type        → Title Case  ("Mandatory" | "Bonus" | "Habit" | "Project")
- *   tasks.late_rule   → "carry_over" | "drop" | "penalise"
- *   tasks.priority    → INTEGER 0–3
- *   tasks.energy_cost → INTEGER 1–5
- *
- * FLAG-DATE: Logic Agent clamps all dates before reaching here.
- *   DB Agent never applies its own date logic — it trusts logicResult.resolvedArgs.date.
- *
- * trimResult(toolName, data):
- *   Strips each payload to the LLM-facing minimum before returning to toolHandler.
- *   Full data is used for all DB writes; only the trimmed object travels upward.
- *   Target: < 300 tokens when serialised as JSON.
+ * Executes Supabase CRUD for all 8 Life Map tools.
+ * Updated: TASK-20260526-025 — remove_task added
+ *          TASK-20260527-002 — complete_task date filter removed (FLAG-DATE)
+ *                            — query_today switched to status-based filter (FLAG-DATE)
+ *          TASK-20260527-003 — clear_tasks added (bulk cancel)
  */
 
 import { supabase } from "./supabaseClient.js";
@@ -34,9 +14,6 @@ import { supabase } from "./supabaseClient.js";
 // Payload trimmer
 // ─────────────────────────────────────────────
 
-/**
- * Strip a tool result to the minimum the LLM needs to narrate a short reply.
- */
 function trimResult(toolName, data) {
   let trimmed;
 
@@ -73,7 +50,7 @@ function trimResult(toolName, data) {
         (t) => t.type === "Mandatory" && t.status === "Pending"
       ).length;
       trimmed = {
-        task_count:    tasks.length,
+        task_count:     tasks.length,
         mandatory_open: mandatoryOpen,
         tasks: tasks.map((t) => ({ title: t.title, status: t.status })),
         player: {
@@ -87,10 +64,10 @@ function trimResult(toolName, data) {
 
     case "query_player_state":
       trimmed = {
-        level:   data.level   ?? null,
+        level:    data.level    ?? null,
         total_xp: data.total_xp ?? null,
-        gold:    data.gold    ?? null,
-        streak:  data.streak  ?? null,
+        gold:     data.gold     ?? null,
+        streak:   data.streak   ?? null,
         stats: Array.isArray(data.stats)
           ? data.stats.map((s) => ({ name: s.stat_name, value: s.current_value }))
           : [],
@@ -114,20 +91,22 @@ function trimResult(toolName, data) {
       };
       break;
 
+    case "clear_tasks":
+      trimmed = {
+        cancelled_count: data.cancelled_count ?? 0,
+        scope:           data.scope           ?? "all",
+      };
+      break;
+
     default:
       trimmed = data;
   }
 
-  const serialised  = JSON.stringify(trimmed);
-  const charLen     = serialised.length;
+  const charLen      = JSON.stringify(trimmed).length;
   const approxTokens = Math.ceil(charLen / 4);
-  console.log(
-    `[dbAgent] trimResult(${toolName}) → ${charLen} chars (~${approxTokens} tokens)`
-  );
+  console.log(`[dbAgent] trimResult(${toolName}) → ${charLen} chars (~${approxTokens} tokens)`);
   if (approxTokens > 300) {
-    console.warn(
-      `[dbAgent] WARNING: trimResult(${toolName}) exceeds 300-token budget (${approxTokens} tokens). Review payload.`
-    );
+    console.warn(`[dbAgent] WARNING: trimResult(${toolName}) exceeds 300-token budget (${approxTokens} tokens).`);
   }
 
   return trimmed;
@@ -137,28 +116,24 @@ function trimResult(toolName, data) {
 // Tool handlers
 // ─────────────────────────────────────────────
 
-/**
- * add_task
- * INSERT into tasks. Logic Agent has already clamped the date (FLAG-DATE).
- */
 async function handleAddTask(logicResult) {
   const args = logicResult.resolvedArgs;
 
   const row = {
-    title:           args.title,
-    date:            args.date,          // Already clamped by Logic Agent
-    type:            args.type            ?? "Bonus",
-    priority:        args.priority        ?? 2,
-    status:          "Pending",
-    time:            args.time            ?? null,
-    time_block:      args.time_block      ?? "Flexible",
-    category:        args.category        ?? null,
-    energy_cost:     args.energy_cost     ?? 3,
-    late_rule:       args.late_rule       ?? "carry_over",
-    xp:              logicResult.xp       ?? 0,
-    gold:            logicResult.gold     ?? 0,
-    description:     args.notes           ?? null,
-    deferred:        false,
+    title:            args.title,
+    date:             args.date,
+    type:             args.type        ?? "Bonus",
+    priority:         args.priority    ?? 2,
+    status:           "Pending",
+    time:             args.time        ?? null,
+    time_block:       args.time_block  ?? "Flexible",
+    category:         args.category    ?? null,
+    energy_cost:      args.energy_cost ?? 3,
+    late_rule:        args.late_rule   ?? "carry_over",
+    xp:               logicResult.xp   ?? 0,
+    gold:             logicResult.gold ?? 0,
+    description:      args.notes       ?? null,
+    deferred:         false,
     penalty_modifier: 1.0,
   };
 
@@ -177,28 +152,18 @@ async function handleAddTask(logicResult) {
       arc_id:  logicResult.resolvedArgs.arc_id,
       task_id: data.id,
     });
-    if (arcErr) {
-      console.warn(`[dbAgent] arc_tasks insert failed (non-fatal): ${arcErr.message}`);
-    }
+    if (arcErr) console.warn(`[dbAgent] arc_tasks insert failed (non-fatal): ${arcErr.message}`);
   }
 
-  const fullData = { title: data.title, xp: data.xp, gold: data.gold, date: data.date };
-  return { success: true, data: trimResult("add_task", fullData), error: null };
+  return {
+    success: true,
+    data: trimResult("add_task", { title: data.title, xp: data.xp, gold: data.gold, date: data.date }),
+    error: null,
+  };
 }
 
-/**
- * complete_task
- * UPDATE tasks.status = Done.
- * UPDATE player_state: total_xp += xp_earned, gold += gold_earned.
- * Check for level-up.
- *
- * FLAG-DATE fix: title match no longer filters by date. Tasks may have any date
- * due to LLM date hallucination history. Match on status='Pending' only, ordered
- * by created_at DESC so the most recently added task wins on ambiguous names.
- */
 async function handleCompleteTask(logicResult) {
   const args = logicResult.resolvedArgs;
-
   let taskRow = null;
 
   if (args.task_id) {
@@ -212,8 +177,7 @@ async function handleCompleteTask(logicResult) {
     }
     taskRow = data;
   } else if (args.task_title) {
-    // FLAG-DATE fix: removed .eq("date", today) — tasks may have any date.
-    // Match on Pending status only, most recently created match wins.
+    // FLAG-DATE fix: no date filter — match on status only, most recent wins
     const { data, error } = await supabase
       .from("tasks")
       .select("id, title, xp, gold, status")
@@ -235,7 +199,7 @@ async function handleCompleteTask(logicResult) {
   }
 
   if (taskRow.status === "Done") {
-    return { success: false, data: null, error: `complete_task: task "${taskRow.title}" is already done.` };
+    return { success: false, data: null, error: `complete_task: "${taskRow.title}" is already done.` };
   }
 
   const completedAt = args.completed_at ?? new Date().toISOString();
@@ -255,11 +219,11 @@ async function handleCompleteTask(logicResult) {
     .single();
 
   if (playerErr || !player) {
-    return { success: false, data: null, error: `complete_task: player_state fetch error: ${playerErr?.message}` };
+    return { success: false, data: null, error: `complete_task: player_state error: ${playerErr?.message}` };
   }
 
-  const xpEarned   = logicResult.xpEarned   ?? taskRow.xp;
-  const goldEarned  = logicResult.goldEarned ?? taskRow.gold;
+  const xpEarned    = logicResult.xpEarned   ?? taskRow.xp;
+  const goldEarned  = logicResult.goldEarned  ?? taskRow.gold;
   const newTotalXp  = player.total_xp + xpEarned;
   const newGold     = player.gold + goldEarned;
 
@@ -276,11 +240,11 @@ async function handleCompleteTask(logicResult) {
   const { error: playerUpdateErr } = await supabase
     .from("player_state")
     .update({
-      total_xp:        newTotalXp,
-      gold:            newGold,
-      level:           newLevel,
+      total_xp:         newTotalXp,
+      gold:             newGold,
+      level:            newLevel,
       xp_to_next_level: xpToNext,
-      updated_at:      new Date().toISOString(),
+      updated_at:       new Date().toISOString(),
     })
     .eq("id", 1);
 
@@ -288,25 +252,21 @@ async function handleCompleteTask(logicResult) {
     console.warn(`[dbAgent] player_state update warning: ${playerUpdateErr.message}`);
   }
 
-  const fullData = {
-    task_title:  taskRow.title,
-    xp_earned:   xpEarned,
-    gold_earned: goldEarned,
-    leveled_up:  leveledUp,
-    new_level:   leveledUp ? newLevel : null,
+  return {
+    success: true,
+    data: trimResult("complete_task", {
+      task_title:  taskRow.title,
+      xp_earned:   xpEarned,
+      gold_earned: goldEarned,
+      leveled_up:  leveledUp,
+      new_level:   leveledUp ? newLevel : null,
+    }),
+    error: null,
   };
-
-  return { success: true, data: trimResult("complete_task", fullData), error: null };
 }
 
-/**
- * reschedule_task
- * UPDATE tasks.date (and optionally time/time_block).
- * Logic Agent has already clamped new_date (FLAG-DATE).
- */
 async function handleRescheduleTask(logicResult) {
   const args = logicResult.resolvedArgs;
-
   let taskRow = null;
 
   if (args.task_id) {
@@ -340,10 +300,7 @@ async function handleRescheduleTask(logicResult) {
     return { success: false, data: null, error: "reschedule_task: task_id or task_title required." };
   }
 
-  const updates = {
-    date:       args.new_date,
-    updated_at: new Date().toISOString(),
-  };
+  const updates = { date: args.new_date, updated_at: new Date().toISOString() };
   if (args.new_time       !== undefined) updates.time       = args.new_time;
   if (args.new_time_block !== undefined) updates.time_block = args.new_time_block;
 
@@ -356,99 +313,69 @@ async function handleRescheduleTask(logicResult) {
     return { success: false, data: null, error: `reschedule_task update error: ${updateErr.message}` };
   }
 
-  const fullData = { task_title: taskRow.title, new_date: args.new_date };
-  return { success: true, data: trimResult("reschedule_task", fullData), error: null };
+  return {
+    success: true,
+    data: trimResult("reschedule_task", { task_title: taskRow.title, new_date: args.new_date }),
+    error: null,
+  };
 }
 
-/**
- * query_today
- * Returns the user's task backlog and a player snapshot.
- *
- * FLAG-DATE fix: "open" filter now queries by status IN ('Pending', 'Carried Over')
- * rather than by date. This is correct behaviour regardless of date issues — the user
- * wants to see everything they still need to do, not just tasks dated exactly today.
- * "done" filter still scopes to tasks completed on or after today's date.
- * "all" still scopes to tasks dated today specifically.
- */
 async function handleQueryToday(logicResult) {
-  const args = logicResult.resolvedArgs;
+  const args  = logicResult.resolvedArgs;
   const today = new Date().toISOString().slice(0, 10);
 
-  const filterStatus     = args.filter_status    ?? "open";
-  const includeCarriedOver =
-    args.include_carried_over === true || args.include_carried_over === "true";
+  const filterStatus       = args.filter_status      ?? "open";
+  const includeCarriedOver = args.include_carried_over === true || args.include_carried_over === "true";
 
   let tasks = [];
 
   if (filterStatus === "open") {
-    // FLAG-DATE fix: query by status, not by date.
-    // Pending = not yet done. Carried Over = explicitly moved forward.
-    // includeCarriedOver is implicit in this query (both statuses included).
-    const statusFilter = includeCarriedOver
-      ? ["Pending", "Carried Over"]
-      : ["Pending"];
-
+    // FLAG-DATE fix: query by status, not by date
+    const statusFilter = includeCarriedOver ? ["Pending", "Carried Over"] : ["Pending"];
     const { data, error } = await supabase
       .from("tasks")
       .select("id, title, type, status, priority, energy_cost, xp, gold, date")
       .in("status", statusFilter)
       .order("date", { ascending: true });
-
-    if (error) {
-      return { success: false, data: null, error: `query_today tasks error: ${error.message}` };
-    }
+    if (error) return { success: false, data: null, error: `query_today error: ${error.message}` };
     tasks = data ?? [];
 
   } else if (filterStatus === "done") {
-    // Done tasks completed on or after today
     const { data, error } = await supabase
       .from("tasks")
       .select("id, title, type, status, priority, energy_cost, xp, gold, date")
       .eq("status", "Done")
       .gte("date", today)
       .order("date", { ascending: true });
-
-    if (error) {
-      return { success: false, data: null, error: `query_today tasks error: ${error.message}` };
-    }
+    if (error) return { success: false, data: null, error: `query_today error: ${error.message}` };
     tasks = data ?? [];
 
   } else {
-    // "all" — everything dated today
+    // "all" — tasks dated today
     const { data, error } = await supabase
       .from("tasks")
       .select("id, title, type, status, priority, energy_cost, xp, gold, date")
       .eq("date", today)
       .order("created_at", { ascending: true });
-
-    if (error) {
-      return { success: false, data: null, error: `query_today tasks error: ${error.message}` };
-    }
+    if (error) return { success: false, data: null, error: `query_today error: ${error.message}` };
     tasks = data ?? [];
   }
 
-  return buildQueryTodayResult(tasks);
-}
-
-async function buildQueryTodayResult(tasks) {
   const { data: player, error: playerErr } = await supabase
     .from("player_state")
     .select("gold, total_xp, streak, level")
     .eq("id", 1)
     .single();
 
-  if (playerErr) {
-    console.warn(`[dbAgent] query_today: player_state fetch warning: ${playerErr.message}`);
-  }
+  if (playerErr) console.warn(`[dbAgent] query_today: player_state warning: ${playerErr.message}`);
 
-  const fullData = { tasks, player: player ?? {} };
-  return { success: true, data: trimResult("query_today", fullData), error: null };
+  return {
+    success: true,
+    data: trimResult("query_today", { tasks, player: player ?? {} }),
+    error: null,
+  };
 }
 
-/**
- * query_player_state
- * SELECT player_state + stats (+ optional skills + effects).
- */
 async function handleQueryPlayerState(logicResult) {
   const args = logicResult.resolvedArgs;
 
@@ -468,49 +395,33 @@ async function handleQueryPlayerState(logicResult) {
 
   let stats = [];
   if (includeStats) {
-    const { data: statsData } = await supabase
-      .from("stats")
-      .select("stat_name, current_value")
-      .order("id", { ascending: true });
-    stats = statsData ?? [];
+    const { data } = await supabase.from("stats").select("stat_name, current_value").order("id");
+    stats = data ?? [];
   }
 
   let effects = [];
   if (includeEffects) {
-    const { data: effectsData } = await supabase
-      .from("effects")
-      .select("name, intensity, expires_on")
-      .eq("active", true);
-    effects = effectsData ?? [];
+    const { data } = await supabase.from("effects").select("name, intensity, expires_on").eq("active", true);
+    effects = data ?? [];
   }
 
   let skills = [];
   if (includeSkills) {
-    const { data: skillsData } = await supabase
-      .from("skills")
-      .select("name, level, xp_accumulated, in_decay")
-      .order("level", { ascending: false })
-      .limit(10);
-    skills = skillsData ?? [];
+    const { data } = await supabase.from("skills").select("name, level, xp_accumulated, in_decay")
+      .order("level", { ascending: false }).limit(10);
+    skills = data ?? [];
   }
 
-  const fullData = {
-    level:    player.level,
-    total_xp: player.total_xp,
-    gold:     player.gold,
-    streak:   player.streak,
-    stats,
-    effects,
-    skills,
+  return {
+    success: true,
+    data: trimResult("query_player_state", {
+      level: player.level, total_xp: player.total_xp, gold: player.gold,
+      streak: player.streak, stats, effects, skills,
+    }),
+    error: null,
   };
-
-  return { success: true, data: trimResult("query_player_state", fullData), error: null };
 }
 
-/**
- * log_event
- * INSERT into events.
- */
 async function handleLogEvent(logicResult) {
   const args  = logicResult.resolvedArgs;
   const today = new Date().toISOString().slice(0, 10);
@@ -525,52 +436,36 @@ async function handleLogEvent(logicResult) {
   };
 
   const { error } = await supabase.from("events").insert(row);
+  if (error) return { success: false, data: null, error: `log_event DB error: ${error.message}` };
 
-  if (error) {
-    return { success: false, data: null, error: `log_event DB error: ${error.message}` };
-  }
-
-  const fullData = { event_type: args.event_type, date: row.event_date };
-  return { success: true, data: trimResult("log_event", fullData), error: null };
+  return {
+    success: true,
+    data: trimResult("log_event", { event_type: args.event_type, date: row.event_date }),
+    error: null,
+  };
 }
 
-/**
- * remove_task
- * Soft-delete: UPDATE tasks SET status = 'Cancelled', updated_at = NOW()
- * Resolves by id or ILIKE title match (any non-Done, non-Cancelled status).
- * Does NOT delete the row — preserves audit trail.
- */
 async function handleRemoveTask(logicResult) {
   const args = logicResult.resolvedArgs;
-
   let taskRow = null;
 
   if (args.task_id) {
     const { data, error } = await supabase
-      .from("tasks")
-      .select("id, title, date, status")
-      .eq("id", args.task_id)
-      .single();
+      .from("tasks").select("id, title, date, status").eq("id", args.task_id).single();
     if (error || !data) {
       return { success: false, data: null, error: `remove_task: task_id ${args.task_id} not found.` };
     }
     taskRow = data;
   } else if (args.task_title) {
     const { data, error } = await supabase
-      .from("tasks")
-      .select("id, title, date, status")
+      .from("tasks").select("id, title, date, status")
       .ilike("title", `%${args.task_title}%`)
       .not("status", "eq", "Done")
       .not("status", "eq", "Cancelled")
       .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1).single();
     if (error || !data) {
-      return {
-        success: false,
-        data: null,
-        error: `remove_task: no cancellable task matching "${args.task_title}".`,
-      };
+      return { success: false, data: null, error: `remove_task: no cancellable task matching "${args.task_title}".` };
     }
     taskRow = data;
   } else {
@@ -578,23 +473,62 @@ async function handleRemoveTask(logicResult) {
   }
 
   if (taskRow.status === "Cancelled") {
-    return { success: false, data: null, error: `remove_task: task "${taskRow.title}" is already cancelled.` };
+    return { success: false, data: null, error: `remove_task: "${taskRow.title}" is already cancelled.` };
   }
   if (taskRow.status === "Done") {
-    return { success: false, data: null, error: `remove_task: task "${taskRow.title}" is already done — cannot cancel.` };
+    return { success: false, data: null, error: `remove_task: "${taskRow.title}" is already done.` };
   }
 
   const { error: updateErr } = await supabase
-    .from("tasks")
-    .update({ status: "Cancelled", updated_at: new Date().toISOString() })
-    .eq("id", taskRow.id);
+    .from("tasks").update({ status: "Cancelled", updated_at: new Date().toISOString() }).eq("id", taskRow.id);
 
   if (updateErr) {
     return { success: false, data: null, error: `remove_task update error: ${updateErr.message}` };
   }
 
-  const fullData = { task_title: taskRow.title, date: taskRow.date };
-  return { success: true, data: trimResult("remove_task", fullData), error: null };
+  return {
+    success: true,
+    data: trimResult("remove_task", { task_title: taskRow.title, date: taskRow.date }),
+    error: null,
+  };
+}
+
+/**
+ * clear_tasks
+ * Bulk soft-delete: UPDATE tasks SET status = 'Cancelled'
+ * scope "today" = only tasks dated today.
+ * scope "all"   = all Pending/Carried Over tasks regardless of date.
+ * Returns cancelled_count so the LLM can give an accurate reply.
+ */
+async function handleClearTasks(logicResult) {
+  const { scope } = logicResult.resolvedArgs;
+  const today = new Date().toISOString().slice(0, 10);
+
+  let query = supabase
+    .from("tasks")
+    .update({ status: "Cancelled", updated_at: new Date().toISOString() })
+    .in("status", ["Pending", "Carried Over"]);
+
+  if (scope === "today") {
+    query = query.eq("date", today);
+  }
+  // scope "all" — no additional filter
+
+  // Use select to get back the affected rows so we can count them
+  const { data, error } = await query.select("id");
+
+  if (error) {
+    return { success: false, data: null, error: `clear_tasks DB error: ${error.message}` };
+  }
+
+  const cancelledCount = Array.isArray(data) ? data.length : 0;
+  console.log(`[dbAgent] clear_tasks(${scope}): cancelled ${cancelledCount} tasks`);
+
+  return {
+    success: true,
+    data: trimResult("clear_tasks", { cancelled_count: cancelledCount, scope }),
+    error: null,
+  };
 }
 
 // ─────────────────────────────────────────────
@@ -622,11 +556,8 @@ export async function callDbAgent(logicResult) {
     case "query_player_state": return handleQueryPlayerState(logicResult);
     case "log_event":          return handleLogEvent(logicResult);
     case "remove_task":        return handleRemoveTask(logicResult);
+    case "clear_tasks":        return handleClearTasks(logicResult);
     default:
-      return {
-        success: false,
-        data: null,
-        error: `dbAgent: unknown tool "${tool}"`,
-      };
+      return { success: false, data: null, error: `dbAgent: unknown tool "${tool}"` };
   }
 }

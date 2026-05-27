@@ -6,25 +6,9 @@
  * Owned by: Logic Agent
  * Called by: toolHandler.js (after arg guards, before DB Agent)
  * Updated:  TASK-20260526-027 — remove_task handler added
- *           TASK-20260527-001 — time_block normalisation added (FLAG-009)
- *           TASK-20260527-002 — date clamping added to handleAddTask (FLAG-DATE)
- *
- * FLAG-008 normalisation (all tools that carry these fields):
- *   tasks.type:        mandatory→Mandatory | bonus→Bonus | habit→Habit | project→Project
- *   tasks.late_rule:   carry_over→carry_over | drop→drop | carry_over_penalty→penalise
- *   tasks.priority:    P0→0 | P1→1 | P2→2 | P3→3
- *   tasks.energy_cost: low→2 | medium→3 | high→5
- *
- * FLAG-009 normalisation:
- *   tasks.time_block:  morning→Morning | afternoon→Afternoon | evening→Evening |
- *                      night→Evening | anytime→Flexible | null→Flexible
- *                      DB CHECK expects Title Case: Morning|Afternoon|Evening|Flexible
- *
- * FLAG-DATE normalisation:
- *   llama-4-scout hallucinates past dates (typically 2024) when inferring "today".
- *   Any date sent by the LLM that is in the past is clamped to the real server date.
- *   Future dates (explicitly scheduled tasks) are left untouched.
- *   Logic Agent is the single point of enforcement — DB Agent receives only valid dates.
+ *           TASK-20260527-001 — time_block normalisation (FLAG-009)
+ *           TASK-20260527-002 — date clamping (FLAG-DATE)
+ *           TASK-20260527-003 — clear_tasks handler added
  */
 
 // ─────────────────────────────────────────────
@@ -52,10 +36,6 @@ const ENERGY_COST_MAP = {
   low: 2, medium: 3, high: 5,
 };
 
-// FLAG-009: time_block normalisation
-// Tool spec sends lowercase ("morning", "anytime"), DB CHECK expects Title Case.
-// "night" is not a valid DB value — map to "Evening" as closest equivalent.
-// null/undefined → "Flexible" (safe default).
 const TIME_BLOCK_MAP = {
   morning:   "Morning",
   afternoon: "Afternoon",
@@ -75,21 +55,12 @@ function normaliseTimeBlock(val)  { return TIME_BLOCK_MAP[val] ?? "Flexible"; }
 // FLAG-DATE: date clamping helper
 // ─────────────────────────────────────────────
 
-/**
- * Resolve and clamp a date value from the LLM.
- * - null/undefined → today
- * - past date      → today (LLM hallucination correction)
- * - future date    → unchanged (explicit scheduling, leave it)
- *
- * @param {string|null} llmDate - Raw date string from LLM (YYYY-MM-DD) or null
- * @returns {string} Valid YYYY-MM-DD date, never in the past
- */
 function resolveDate(llmDate) {
   const serverToday = new Date().toISOString().slice(0, 10);
   if (!llmDate) return serverToday;
   if (llmDate < serverToday) {
     console.warn(
-      `[logicAgent] FLAG-DATE: LLM sent past date "${llmDate}" — correcting to server today (${serverToday})`
+      `[logicAgent] FLAG-DATE: LLM sent past date "${llmDate}" — correcting to ${serverToday}`
     );
     return serverToday;
   }
@@ -97,7 +68,7 @@ function resolveDate(llmDate) {
 }
 
 // ─────────────────────────────────────────────
-// XP base values (per AGENTS.md)
+// XP / Gold tables
 // ─────────────────────────────────────────────
 
 const XP_BASE = {
@@ -107,41 +78,19 @@ const XP_BASE = {
   Bonus:      6,
 };
 
-// Gold base by priority (DB-native integer key)
 const GOLD_BASE = { 0: 15, 1: 10, 2: 6, 3: 3 };
+
+function computeGold(priorityInt, energyCostRaw) {
+  const base   = GOLD_BASE[priorityInt] ?? GOLD_BASE[2];
+  const offset = energyCostRaw === "low" ? -2 : energyCostRaw === "high" ? 5 : 0;
+  return Math.max(1, base + offset);
+}
 
 // ─────────────────────────────────────────────
 // Per-tool handlers
 // ─────────────────────────────────────────────
 
-// ── remove_task ──────────────────────────────
-function handleRemoveTask(args) {
-  const { task_id, task_title } = args;
-
-  if (!task_id && !task_title) {
-    return {
-      tool: "remove_task",
-      resolvedArgs: {},
-      needsClarification: true,
-      casualPrompt: "Which task do you want to remove? Give me a name or ID.",
-    };
-  }
-
-  const resolvedArgs = {};
-  if (task_id    != null) resolvedArgs.task_id    = task_id;
-  if (task_title != null) resolvedArgs.task_title = task_title;
-
-  return {
-    tool: "remove_task",
-    resolvedArgs,
-    needsClarification: false,
-  };
-}
-
-// ── add_task ─────────────────────────────────
 function handleAddTask(args) {
-  // FLAG-DATE: clamp LLM-provided date — past dates (typically 2024 hallucinations)
-  // are corrected to server today. Future dates are left alone.
   const resolvedDate = resolveDate(args.date);
 
   const resolvedArgs = {
@@ -156,9 +105,8 @@ function handleAddTask(args) {
 
   const taskType = resolvedArgs.type ?? "Bonus";
   const priority = resolvedArgs.priority ?? 2;
-
-  const xp   = XP_BASE[taskType] ?? XP_BASE.Bonus;
-  const gold = computeGold(priority, args.energy_cost ?? "medium");
+  const xp       = XP_BASE[taskType] ?? XP_BASE.Bonus;
+  const gold     = computeGold(priority, args.energy_cost ?? "medium");
 
   return {
     tool: "add_task",
@@ -171,7 +119,6 @@ function handleAddTask(args) {
   };
 }
 
-// ── complete_task ─────────────────────────────
 function handleCompleteTask(args) {
   return {
     tool: "complete_task",
@@ -182,60 +129,56 @@ function handleCompleteTask(args) {
   };
 }
 
-// ── reschedule_task ───────────────────────────
 function handleRescheduleTask(args) {
-  // FLAG-DATE: clamp new_date too — can't reschedule to the past
-  const resolvedArgs = {
-    ...args,
-    new_date: resolveDate(args.new_date),
-  };
   return {
     tool: "reschedule_task",
-    resolvedArgs,
+    resolvedArgs: { ...args, new_date: resolveDate(args.new_date) },
     needsClarification: false,
     statDeltas:  [],
     skillDeltas: [],
   };
 }
 
-// ── query_today ───────────────────────────────
 function handleQueryToday(args) {
-  return {
-    tool: "query_today",
-    resolvedArgs: { ...args },
-    needsClarification: false,
-  };
+  return { tool: "query_today", resolvedArgs: { ...args }, needsClarification: false };
 }
 
-// ── query_player_state ────────────────────────
 function handleQueryPlayerState(args) {
-  return {
-    tool: "query_player_state",
-    resolvedArgs: { ...args },
-    needsClarification: false,
-  };
+  return { tool: "query_player_state", resolvedArgs: { ...args }, needsClarification: false };
 }
 
-// ── log_event ─────────────────────────────────
 function handleLogEvent(args) {
-  return {
-    tool: "log_event",
-    resolvedArgs: { ...args },
-    needsClarification: false,
-  };
+  return { tool: "log_event", resolvedArgs: { ...args }, needsClarification: false };
 }
 
-// ─────────────────────────────────────────────
-// Gold computation helper
-// Base: P0=15g / P1=10g / P2=6g / P3=3g
-// Effort offset: low=-2 / medium=0 / high=+5
-// Floor: 1g minimum
-// ─────────────────────────────────────────────
+function handleRemoveTask(args) {
+  if (!args.task_id && !args.task_title) {
+    return {
+      tool: "remove_task",
+      resolvedArgs: {},
+      needsClarification: true,
+      casualPrompt: "Which task do you want to remove? Give me a name or ID.",
+    };
+  }
+  const resolvedArgs = {};
+  if (args.task_id    != null) resolvedArgs.task_id    = args.task_id;
+  if (args.task_title != null) resolvedArgs.task_title = args.task_title;
+  return { tool: "remove_task", resolvedArgs, needsClarification: false };
+}
 
-function computeGold(priorityInt, energyCostRaw) {
-  const base   = GOLD_BASE[priorityInt] ?? GOLD_BASE[2];
-  const offset = energyCostRaw === "low" ? -2 : energyCostRaw === "high" ? 5 : 0;
-  return Math.max(1, base + offset);
+/**
+ * clear_tasks
+ * Bulk cancel all open tasks by scope.
+ * scope "today" = only tasks dated today.
+ * scope "all"   = all Pending/Carried Over regardless of date (default).
+ */
+function handleClearTasks(args) {
+  const scope = (args.scope === "today") ? "today" : "all";
+  return {
+    tool: "clear_tasks",
+    resolvedArgs: { scope },
+    needsClarification: false,
+  };
 }
 
 // ─────────────────────────────────────────────
@@ -246,14 +189,14 @@ export async function callLogicAgent(toolName, args) {
   console.log(`[logicAgent] Dispatching: ${toolName}`, args);
 
   switch (toolName) {
-    case "remove_task":        return handleRemoveTask(args);
     case "add_task":           return handleAddTask(args);
     case "complete_task":      return handleCompleteTask(args);
     case "reschedule_task":    return handleRescheduleTask(args);
     case "query_today":        return handleQueryToday(args);
     case "query_player_state": return handleQueryPlayerState(args);
     case "log_event":          return handleLogEvent(args);
-
+    case "remove_task":        return handleRemoveTask(args);
+    case "clear_tasks":        return handleClearTasks(args);
     default:
       throw new Error(`[logicAgent] Unknown tool: "${toolName}"`);
   }
