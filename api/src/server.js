@@ -50,7 +50,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // ─────────────────────────────────────────────
-// GET /health — SAFELY MODIFIED FOR RAILWAY BOOTING
+// GET /health — RESILIENT FOR RAILWAY CONTEXT
 // ─────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   let dbConnected = false;
@@ -60,8 +60,6 @@ app.get("/health", async (_req, res) => {
     console.error("[health check] Supabase ping failed:", err.message);
   }
 
-  // Always return HTTP 200 so the container successfully deploys.
-  // The JSON data will display the structural status.
   return res.status(200).json({
     status: dbConnected ? "ok" : "degraded",
     db: dbConnected ? "connected" : "error",
@@ -75,15 +73,13 @@ app.get("/health", async (_req, res) => {
 // ─────────────────────────────────────────────
 app.get("/tasks", async (_req, res) => {
   try {
-    // Intercept state arrays using your core system's established stubs
-    // Maps cleanly to the structured JSON schema expected by index.html panels
     const rawState = await handleToolCall("get_tasks", {});
     
     if (rawState && rawState.success && Array.isArray(rawState.result)) {
       return res.json(rawState.result);
     }
     
-    // Fail-safe mock structure if database tables are uninitialized
+    // Fallback template matching front-end expectation
     return res.json([
       { id: "1", title: "Review active quest constraints", time: "09:00", priority: 4 },
       { id: "2", title: "Compile code base parameters", time: "14:30", priority: 2 },
@@ -97,8 +93,6 @@ app.get("/tasks", async (_req, res) => {
 
 // ─────────────────────────────────────────────
 // Cron auth middleware
-// Validates x-cron-secret header against SUPABASE_SERVICE_ROLE_KEY.
-// Applied to /cron/* routes only — NOT to /health (health ping is unauthenticated).
 // ─────────────────────────────────────────────
 function requireCronSecret(req, res, next) {
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -109,17 +103,11 @@ function requireCronSecret(req, res, next) {
   next();
 }
 
-// ─────────────────────────────────────────────
-// POST /cron/morning
-// ─────────────────────────────────────────────
 app.post("/cron/morning", requireCronSecret, async (_req, res) => {
   console.log("[server] /cron/morning triggered at", new Date().toISOString());
   return res.status(200).json({ status: "ok", message: "stub — not yet implemented" });
 });
 
-// ─────────────────────────────────────────────
-// POST /cron/eod
-// ─────────────────────────────────────────────
 app.post("/cron/eod", requireCronSecret, async (_req, res) => {
   console.log("[server] /cron/eod triggered at", new Date().toISOString());
   return res.status(200).json({ status: "ok", message: "stub — not yet implemented" });
@@ -131,7 +119,6 @@ app.post("/cron/eod", requireCronSecret, async (_req, res) => {
 app.post("/chat", async (req, res) => {
   const { message, session_id: incomingSessionId } = req.body;
 
-  // Validate request
   if (!message || typeof message !== "string" || message.trim() === "") {
     return res.status(400).json({ error: "message is required and must be a non-empty string." });
   }
@@ -139,7 +126,6 @@ app.post("/chat", async (req, res) => {
   let sessionId = incomingSessionId ?? null;
 
   try {
-    // 1. Session resolution
     if (sessionId) {
       const exists = await conversationExists(sessionId);
       if (!exists) {
@@ -151,14 +137,11 @@ app.post("/chat", async (req, res) => {
       sessionId = await createConversation();
     }
 
-    // 2. Persist user message summary
     const userSummary = buildUserSummary(message);
     await insertMessage(sessionId, userSummary);
 
-    // 3. Assemble context (last N exchanges)
     const history = await assembleContext(sessionId);
 
-    // 4. First Groq call
     const groqResponse = await callGroq({
       systemPrompt: SYSTEM_PROMPT,
       history,
@@ -170,14 +153,12 @@ app.post("/chat", async (req, res) => {
     let assistantEntities = {};
     let assistantOutcome = "ok";
 
-    // 5. Tool call branch
     if (groqResponse.type === "tool_use") {
       const { toolName, toolArgs, rawCall } = groqResponse;
       assistantIntent = toolName;
 
       console.log(`[server] LLM requested tool: ${toolName}`, toolArgs);
 
-      // 5a. Validate + dispatch to Logic Agent stub → DB Agent stub
       const toolResult = await handleToolCall(toolName, toolArgs);
 
       if (!toolResult.success && toolResult.clarification) {
@@ -185,7 +166,6 @@ app.post("/chat", async (req, res) => {
         assistantOutcome = "clarification needed";
         assistantEntities = { tool: toolName };
       } else {
-        // 5b. Feed tool result back to Groq for final natural language reply
         const secondPass = await callGroqWithToolResult({
           systemPrompt: SYSTEM_PROMPT,
           history,
@@ -208,7 +188,6 @@ app.post("/chat", async (req, res) => {
       finalReply = groqResponse.content;
     }
 
-    // 6. Persist assistant summary
     const assistantSummary = buildAssistantSummary(
       assistantIntent,
       assistantEntities,
@@ -216,7 +195,6 @@ app.post("/chat", async (req, res) => {
     );
     await insertMessage(sessionId, assistantSummary);
 
-    // 7. Return
     return res.json({ reply: finalReply, session_id: sessionId });
 
   } catch (err) {
@@ -229,21 +207,18 @@ app.post("/chat", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// STATIC FRONTEND ROUTING (ADJUSTED FOR API/ ROOT CONTEXT)
+// STATIC FRONTEND ROUTING (ROOT ALIGNED FOR /api ENVIRONMENT)
 // ─────────────────────────────────────────────
-// When api/ is the root, index.html is in the immediate current directory (.)
-app.use(express.static(path.join(__dirname, ".."))); // Covers src/../ index matching
-app.use(express.static(__dirname)); 
-app.use(express.static(process.cwd())); // Fallback to current working directory
+// Since Railway sets root to /api, index.html is located at the execution root directory
+app.use(express.static(process.cwd()));
+app.use(express.static(path.join(__dirname, ".."))); 
 
 app.get("/", (req, res) => {
-  // Checks relative to working directory execution root
   res.sendFile(path.join(process.cwd(), "index.html"), (err) => {
     if (err) {
-      // Fallback relative to the src/ directory path
       res.sendFile(path.join(__dirname, "..", "index.html"), (err2) => {
         if (err2) {
-          res.sendFile(path.join(__dirname, "index.html"));
+          res.status(404).send("index.html template not found in execution directory tree.");
         }
       });
     }
