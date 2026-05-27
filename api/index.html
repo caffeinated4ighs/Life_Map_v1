@@ -12,17 +12,13 @@
         :root {
             --bg-color: #0c0c12;
             --panel-bg: #181825;
-            --border-color: #705335; /* Gold/Bronze RPG Border */
+            --border-color: #705335;
             --text-color: #f4ebd0;
             --text-dim: #a59a84;
             --accent-color: #ff9f1c;
         }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             background-color: var(--bg-color);
@@ -56,19 +52,17 @@
             margin-top: 5px;
         }
 
-        .status-ok { color: #55ff55; }
+        .status-ok    { color: #55ff55; }
         .status-error { color: #ff5555; }
 
-        /* Dashboard Layout */
         .dashboard-container {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 20px;
             flex: 1;
-            min-height: 0; /* Prevents grid items from overflowing */
+            min-height: 0;
         }
 
-        /* RPG Panel Box Styling */
         .rpg-panel {
             background-color: var(--panel-bg);
             border: 4px solid var(--border-color);
@@ -89,54 +83,48 @@
             margin-bottom: 15px;
         }
 
-        /* --- TASK LIST COMPONENT --- */
-        .task-list-wrapper {
-            overflow-y: auto;
-            flex: 1;
-        }
+        /* Task list */
+        .task-list-wrapper { overflow-y: auto; flex: 1; }
 
         .task-item {
             border: 2px solid #2a2a3a;
-            padding: 10px;
-            margin-bottom: 10px;
+            padding: 8px 10px;
+            margin-bottom: 8px;
             background: rgba(0,0,0,0.3);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 8px;
         }
 
-        /* Chronological highlight for the top/next task */
-        .task-item.next-up {
-            border: 2px solid var(--accent-color);
-            box-shadow: 0 0 8px rgba(255, 159, 28, 0.4);
-            background: rgba(255, 159, 28, 0.05);
+        .task-item.mandatory {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 6px rgba(255,159,28,0.3);
+            background: rgba(255,159,28,0.04);
         }
 
-        .next-tag {
+        .task-title { flex: 1; }
+
+        .type-badge {
             font-family: 'Press Start 2P', cursive;
-            font-size: 0.6rem;
-            background: var(--accent-color);
-            color: #000;
-            padding: 2px 5px;
-            margin-right: 8px;
-        }
-
-        .task-meta {
-            font-size: 1rem;
-            color: var(--text-dim);
-        }
-
-        /* Dynamic Priority Coloring based on Hue */
-        /* Lower numbers (e.g., 1) = cooler/calm greens, Higher numbers (e.g., 5) = hotter reds */
-        .prio-badge {
-            font-family: 'Press Start 2P', cursive;
-            font-size: 0.7rem;
-            padding: 4px 8px;
+            font-size: 0.55rem;
+            padding: 3px 6px;
             border: 1px solid currentColor;
-            border-radius: 3px;
+            white-space: nowrap;
         }
 
-        /* --- CHAT COMPONENT --- */
+        .type-mandatory { color: var(--accent-color); }
+        .type-bonus      { color: #7ec8e3; }
+        .type-habit      { color: #a8e6a3; }
+        .type-project    { color: #c8a8e6; }
+
+        .no-tasks {
+            color: var(--text-dim);
+            font-style: italic;
+            padding: 10px 0;
+        }
+
+        /* Chat */
         .chat-log {
             flex: 1;
             overflow-y: auto;
@@ -144,19 +132,13 @@
             padding-right: 5px;
         }
 
-        .chat-msg {
-            margin-bottom: 12px;
-            line-height: 1.4;
-        }
+        .chat-msg { margin-bottom: 12px; line-height: 1.4; }
 
-        .msg-user { color: #55ffff; }
-        .msg-ai { color: var(--text-color); }
+        .msg-user   { color: #55ffff; }
+        .msg-ai     { color: var(--text-color); }
         .msg-system { color: var(--text-dim); font-style: italic; }
 
-        .chat-input-row {
-            display: flex;
-            gap: 10px;
-        }
+        .chat-input-row { display: flex; gap: 10px; }
 
         input[type="text"] {
             flex: 1;
@@ -169,9 +151,7 @@
             outline: none;
         }
 
-        input[type="text"]:focus {
-            border-color: var(--accent-color);
-        }
+        input[type="text"]:focus { border-color: var(--accent-color); }
 
         button {
             background-color: var(--border-color);
@@ -183,10 +163,7 @@
             cursor: pointer;
         }
 
-        button:hover {
-            background-color: var(--accent-color);
-            color: #000;
-        }
+        button:hover { background-color: var(--accent-color); color: #000; }
 
         @media (max-width: 768px) {
             .dashboard-container { grid-template-columns: 1fr; }
@@ -206,7 +183,7 @@
         <div class="rpg-panel">
             <div class="panel-title">> TODAY'S QUESTS</div>
             <div class="task-list-wrapper" id="task-list">
-                <div class="task-msg msg-system">Fetching local scrolls...</div>
+                <div class="no-tasks">Loading...</div>
             </div>
         </div>
 
@@ -216,7 +193,7 @@
                 <div class="chat-msg msg-system">System initialization complete. Speak your intent.</div>
             </div>
             <div class="chat-input-row">
-                <input type="text" id="chat-input" placeholder="Type an action (e.g., 'add task: drink water at 2pm prio 2')..." autocomplete="off">
+                <input type="text" id="chat-input" placeholder="Type a command..." autocomplete="off">
                 <button id="send-btn">EXECUTE</button>
             </div>
         </div>
@@ -225,72 +202,81 @@
 
     <script>
     const API_BASE = "https://lifemapv1-production.up.railway.app";
-    
-    const statusEl = document.getElementById('connection-status');
-    const chatLog = document.getElementById('chat-log');
+
+    const statusEl  = document.getElementById('connection-status');
+    const chatLog   = document.getElementById('chat-log');
     const chatInput = document.getElementById('chat-input');
-    const sendBtn = document.getElementById('send-btn');
+    const sendBtn   = document.getElementById('send-btn');
     const taskListEl = document.getElementById('task-list');
 
     let sessionId = localStorage.getItem('lifemap_session_id') || null;
 
+    // ── Health check ──────────────────────────────────────────
     async function checkHealth() {
         try {
             const res = await fetch(`${API_BASE}/health`);
             if (!res.ok) throw new Error();
-            const data = await res.json();
             statusEl.innerText = "● REALM CONNECTED";
             statusEl.className = "status-ok";
-        } catch (err) {
+        } catch {
             statusEl.innerText = "● LINK BROKEN";
             statusEl.className = "status-error";
         }
     }
 
-    // Get tasks via chat (recommended for now)
-    async function updateDashboard() {
-        taskListEl.innerHTML = `<div class="chat-msg msg-system">Consulting the Secretary for today's quests...</div>`;
-        
+    // ── Dashboard refresh via GET /state (never touches /chat) ─
+    async function refreshDashboard() {
         try {
-            const res = await fetch(`${API_BASE}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: "list all today's tasks in a clean format",
-                    session_id: sessionId || undefined
-                })
-            });
-
+            const res  = await fetch(`${API_BASE}/state`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            
-            if (data.session_id) {
-                sessionId = data.session_id;
-                localStorage.setItem('lifemap_session_id', sessionId);
-            }
-
-            taskListEl.innerHTML = `
-                <div class="chat-msg msg-system" style="white-space: pre-line; line-height: 1.5;">
-                    ${data.reply || "Secretary has no tasks for today."}
-                </div>
-            `;
-
+            renderTaskList(data.tasks ?? []);
         } catch (err) {
-            taskListEl.innerHTML = `<div class="chat-msg msg-system" style="color:#ff5555;">Failed to load quests. Use chat panel.</div>`;
+            taskListEl.innerHTML = `<div class="no-tasks" style="color:#ff5555;">Failed to load quests.</div>`;
         }
     }
 
+    function renderTaskList(tasks) {
+        if (tasks.length === 0) {
+            taskListEl.innerHTML = `<div class="no-tasks">No active quests. Add one.</div>`;
+            return;
+        }
+
+        const html = tasks.map((t) => {
+            const isMandatory = t.type === 'Mandatory';
+            const typeClass   = `type-${(t.type || 'bonus').toLowerCase()}`;
+            return `
+                <div class="task-item ${isMandatory ? 'mandatory' : ''}">
+                    <span class="task-title">${escapeHtml(t.title)}</span>
+                    <span class="type-badge ${typeClass}">${t.type || 'Bonus'}</span>
+                </div>`;
+        }).join('');
+
+        taskListEl.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // ── Chat ──────────────────────────────────────────────────
     async function handleSendMessage() {
         const text = chatInput.value.trim();
         if (!text) return;
 
         appendChatMessage("YOU", text, "msg-user");
         chatInput.value = '';
+        sendBtn.disabled = true;
 
         try {
             const response = await fetch(`${API_BASE}/chat`, {
-                method: 'POST',
+                method:  'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, session_id: sessionId || undefined })
+                body:    JSON.stringify({ message: text, session_id: sessionId || undefined }),
             });
 
             const data = await response.json();
@@ -301,27 +287,32 @@
             }
 
             appendChatMessage("SECRETARY", data.reply || "Understood.", "msg-ai");
-            updateDashboard();   // Refresh tasks after every action
 
-        } catch (err) {
+            // Refresh task panel after every action — uses /state, not /chat
+            await refreshDashboard();
+
+        } catch {
             appendChatMessage("SYS", "Connection lost to the realm.", "msg-system");
+        } finally {
+            sendBtn.disabled = false;
+            chatInput.focus();
         }
     }
 
     function appendChatMessage(sender, message, styleClass) {
         const msgNode = document.createElement('div');
         msgNode.className = `chat-msg ${styleClass}`;
-        msgNode.innerHTML = `<strong>[${sender}]:</strong> ${message}`;
+        msgNode.innerHTML = `<strong>[${sender}]:</strong> ${escapeHtml(message)}`;
         chatLog.appendChild(msgNode);
         chatLog.scrollTop = chatLog.scrollHeight;
     }
 
-    // Init
+    // ── Init ──────────────────────────────────────────────────
     sendBtn.addEventListener('click', handleSendMessage);
     chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleSendMessage(); });
 
     checkHealth();
-    updateDashboard();
-</script>
+    refreshDashboard();
+    </script>
 </body>
 </html>

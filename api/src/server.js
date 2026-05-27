@@ -2,13 +2,15 @@
  * server.js
  * ---------
  * Life Map API — Express entry point.
+ * Updated: TASK-20260527-004 — added GET /state endpoint for dashboard polling.
+ *          Dashboard must use /state, never /chat, to avoid polluting conversation context.
  */
 
 import "dotenv/config";
 import express from "express";
 import { fileURLToPath } from "url";
 import path from "path";
-import { checkDbConnectivity } from "./supabaseClient.js";
+import { checkDbConnectivity, supabase } from "./supabaseClient.js";
 import {
   assembleContext,
   buildAssistantSummary,
@@ -22,7 +24,7 @@ import { handleToolCall } from "./toolHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SYSTEM_PROMPT = `You are a casual RPG task manager secretary. Use tools to manage tasks and answer questions. Always reply in plain conversational English — never output JSON or structured data in your replies, very short replies (example -> task added/deleted/completed).`;
+const SYSTEM_PROMPT = `You are a casual RPG task manager secretary. Use tools to manage tasks and answer questions. Always reply in plain conversational English — never output JSON or structured data in your replies. Keep replies very short (e.g. "Task added.", "Done — calling mom cancelled.", "You've got 3 tasks open: calling mom (mandatory), wrap up project, send SSN email."). When asked about a specific task, always name it explicitly. Never say "Task Title" — use the actual task name from the tool result.`;
 
 const app = express();
 app.use(express.json());
@@ -51,10 +53,50 @@ app.get("/health", async (_req, res) => {
 });
 
 // ─────────────────────────────────────────────
+// GET /state  — dashboard data endpoint
+// Returns structured task list + player snapshot without touching any conversation.
+// The frontend MUST use this for all display refreshes — never POST /chat for this.
+// ─────────────────────────────────────────────
+app.get("/state", async (_req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { data: tasks, error: tasksErr } = await supabase
+      .from("tasks")
+      .select("id, title, type, status, priority, date, xp, gold")
+      .in("status", ["Pending", "Carried Over"])
+      .order("date", { ascending: true });
+
+    if (tasksErr) {
+      return res.status(500).json({ error: `tasks query failed: ${tasksErr.message}` });
+    }
+
+    const { data: player, error: playerErr } = await supabase
+      .from("player_state")
+      .select("level, total_xp, gold, streak, xp_to_next_level, mh_score")
+      .eq("id", 1)
+      .single();
+
+    if (playerErr) {
+      return res.status(500).json({ error: `player_state query failed: ${playerErr.message}` });
+    }
+
+    return res.json({
+      tasks: tasks ?? [],
+      player: player ?? {},
+      as_of: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("[server] GET /state error:", err);
+    return res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
 // Cron auth middleware
 // ─────────────────────────────────────────────
 function requireCronSecret(req, res, next) {
-  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const secret   = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const provided = req.headers["x-cron-secret"];
   if (!provided || provided !== secret) {
     return res.status(401).json({ error: "Unauthorized — invalid or missing x-cron-secret." });
@@ -108,9 +150,9 @@ app.post("/chat", async (req, res) => {
     });
 
     let finalReply;
-    let assistantIntent = "chitchat";
+    let assistantIntent  = "chitchat";
     let assistantEntities = {};
-    let assistantOutcome = "ok";
+    let assistantOutcome  = "ok";
 
     if (groqResponse.type === "tool_use") {
       const { toolName, toolArgs, rawCall } = groqResponse;
@@ -121,7 +163,7 @@ app.post("/chat", async (req, res) => {
       const toolResult = await handleToolCall(toolName, toolArgs);
 
       if (!toolResult.success && toolResult.clarification) {
-        finalReply = toolResult.clarification;
+        finalReply       = toolResult.clarification;
         assistantOutcome = "clarification needed";
         assistantEntities = { tool: toolName };
       } else {
@@ -129,18 +171,24 @@ app.post("/chat", async (req, res) => {
           systemPrompt: SYSTEM_PROMPT,
           history,
           userMessage: message,
-          toolCall: rawCall,
-          toolResult: toolResult.result,
+          toolCall:    rawCall,
+          toolResult:  toolResult.result,
         });
 
-        finalReply = secondPass.content;
+        finalReply       = secondPass.content;
         assistantOutcome = toolResult.success ? "success" : "tool_error";
+
+        // Store task titles in entities so follow-up questions can reference them
+        const resultData = toolResult.result?.data ?? {};
         assistantEntities = {
-          tool: toolName,
+          tool:    toolName,
           success: toolResult.success,
-          ...(toolArgs.task_id ? { task_id: toolArgs.task_id } : {}),
-          ...(toolArgs.task_title ? { task_title: toolArgs.task_title } : {}),
-          ...(toolArgs.date ? { date: toolArgs.date } : {}),
+          // For query_today: persist task titles so "what's the mandatory task?" works
+          ...(resultData.tasks     ? { tasks: resultData.tasks }               : {}),
+          ...(resultData.task_title ? { task_title: resultData.task_title }     : {}),
+          ...(resultData.title      ? { title: resultData.title }               : {}),
+          ...(toolArgs.task_id      ? { task_id: toolArgs.task_id }             : {}),
+          ...(toolArgs.date         ? { date: toolArgs.date }                   : {}),
         };
       }
     } else {
