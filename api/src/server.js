@@ -30,6 +30,12 @@ import {
 import { callGroq, callGroqWithToolResult } from "./groqClient.js";
 import { handleToolCall } from "./toolHandler.js";
 
+// Add this after your other imports and middleware
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));  // or '../index.html' depending on structure
+});
+const path = require('path');
+
 // ─────────────────────────────────────────────
 // System prompt placeholder
 // TODO: replace with versioned prompt from Prompt Engineer Agent
@@ -38,6 +44,15 @@ import { handleToolCall } from "./toolHandler.js";
 const SYSTEM_PROMPT = `You are a casual RPG task manager secretary. Use tools to manage tasks and answer questions. Always reply in plain conversational English — never output JSON or structured data in your replies, very short replies (example -> task added/deleted/completed).`
 const app = express();
 app.use(express.json());
+
+// ADD HERE
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 
@@ -208,6 +223,17 @@ app.post("/chat", async (req, res) => {
       detail: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
+});
+
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Serve index.html at GET /
+app.use(express.static(path.join(__dirname, '..')));  // serves api/ directory
+app.get('/', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'index.html'));
 });
 
 // ─────────────────────────────────────────────
